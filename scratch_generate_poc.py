@@ -5,13 +5,15 @@ Proof-of-concept: generate a single English voice line with Qwen3-TTS.
 Runs on CPU (no GPU in this environment): device_map="cpu",
 dtype=torch.float32, attn_implementation="eager".
 
-Uses the 0.6B CustomVoice checkpoint (~2.5 GB) with the built-in English
-speaker "Ryan" (no reference audio needed).
+Uses the 1.7B CustomVoice checkpoint with the built-in English speaker
+"Ryan" (no reference audio needed). The 1.7B model is markedly higher
+quality than the 0.6B; the 0.6B produced breathy, phoneme-like output.
 
-Because CPU sampling occasionally produces a rambling/looping take, this
-script generates a few candidates (varying how the version number is
-written + the RNG seed), trims leading/trailing silence, and keeps the
-most compact clean take.
+Uses the full recommended generation params (temperature / top-k / top-p /
+repetition penalty AND the sub-talker codec params) — these matter a lot
+for the 12 Hz codec; omitting them yields mushy audio.
+
+Generates a few candidates, trims silence, keeps the most compact clean take.
 """
 import time
 import numpy as np
@@ -20,18 +22,31 @@ import soundfile as sf
 
 from qwen_tts import Qwen3TTSModel
 
-MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 OUT_PATH = "claude_opus_poc.wav"
 SPEAKER = "Ryan"
 LANGUAGE = "English"
 
-# The listener should hear "Hello, I am Claude Opus 4.8". Spelling the number
-# out reads more reliably than the digits "4.8" for TTS.
+# Listener should hear "Hello, I am Claude Opus 4.8". Spelling the number out
+# reads more reliably than the digits "4.8".
 CANDIDATE_TEXTS = [
     "Hello, I am Claude Opus four point eight.",
     "Hello, I am Claude Opus four point eight.",
     "Hello, I am Claude Opus 4.8.",
 ]
+
+GEN_KWARGS = dict(
+    max_new_tokens=512,
+    do_sample=True,
+    top_k=50,
+    top_p=1.0,
+    temperature=0.9,
+    repetition_penalty=1.05,
+    subtalker_dosample=True,
+    subtalker_top_k=50,
+    subtalker_top_p=1.0,
+    subtalker_temperature=0.9,
+)
 
 
 def trim_silence(w, sr, thr=0.02, pad=0.15):
@@ -59,33 +74,26 @@ def main():
     )
     print(f"Model loaded in {time.time() - t0:.1f}s")
 
-    best = None  # (trimmed_dur, wav, sr, text, seed)
+    best = None  # (dur, wav, sr, text, seed)
     for i, text in enumerate(CANDIDATE_TEXTS):
         torch.manual_seed(1234 + i)
         t0 = time.time()
         wavs, sr = tts.generate_custom_voice(
-            text=text,
-            language=LANGUAGE,
-            speaker=SPEAKER,
-            max_new_tokens=256,
+            text=text, language=LANGUAGE, speaker=SPEAKER, **GEN_KWARGS,
         )
         raw = np.asarray(wavs[0], dtype=np.float32)
         trimmed, dur = trim_silence(raw, sr)
         print(f"[cand {i}] text={text!r} raw={len(raw)/sr:.2f}s "
               f"trimmed={dur:.2f}s gen={time.time()-t0:.1f}s")
-        # Prefer a compact take (roughly 1.5-5s of speech). Score by closeness
-        # to that band, then by shortness.
-        if 1.2 <= dur <= 6.0:
-            score = dur
-            if best is None or score < best[0]:
-                best = (score, trimmed, sr, text, 1234 + i)
+        if 1.5 <= dur <= 6.0:
+            if best is None or dur < best[0]:
+                best = (dur, trimmed, sr, text, 1234 + i)
 
     if best is None:
-        # Fall back to first candidate raw if nothing landed in the band.
         torch.manual_seed(1234)
         wavs, sr = tts.generate_custom_voice(
             text=CANDIDATE_TEXTS[0], language=LANGUAGE, speaker=SPEAKER,
-            max_new_tokens=256)
+            **GEN_KWARGS)
         trimmed, dur = trim_silence(np.asarray(wavs[0], dtype=np.float32), sr)
         best = (dur, trimmed, sr, CANDIDATE_TEXTS[0], 1234)
 
