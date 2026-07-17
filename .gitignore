@@ -26,4 +26,5 @@ env/
 
 # POC run artifacts
 poc_run.log
+vd_run.log
 *.wav
