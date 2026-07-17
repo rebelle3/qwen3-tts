@@ -22,3 +22,8 @@ wheels/
 .vscode/
 venv/
 env/
+.venv/
+
+# POC run artifacts
+poc_run.log
+*.wav
