@@ -28,4 +28,5 @@ env/
 poc_run.log
 vd_run.log
 styles_run.log
+latent_explore.log
 *.wav
