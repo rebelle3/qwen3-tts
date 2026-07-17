@@ -2,15 +2,19 @@
 """
 Proof-of-concept: generate a single English voice line with Qwen3-TTS.
 
-Adapted to run on CPU (no GPU available in this environment):
-  - device_map="cpu"
-  - dtype=torch.float32
-  - attn_implementation="eager" (flash-attn / sdpa not needed on CPU)
+Runs on CPU (no GPU in this environment): device_map="cpu",
+dtype=torch.float32, attn_implementation="eager".
 
-Uses the smaller 0.6B CustomVoice checkpoint (~2.5 GB) with a built-in
-English speaker ("Ryan"), so no reference audio clip is required.
+Uses the 0.6B CustomVoice checkpoint (~2.5 GB) with the built-in English
+speaker "Ryan" (no reference audio needed).
+
+Because CPU sampling occasionally produces a rambling/looping take, this
+script generates a few candidates (varying how the version number is
+written + the RNG seed), trims leading/trailing silence, and keeps the
+most compact clean take.
 """
 import time
+import numpy as np
 import torch
 import soundfile as sf
 
@@ -18,9 +22,28 @@ from qwen_tts import Qwen3TTSModel
 
 MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 OUT_PATH = "claude_opus_poc.wav"
-TEXT = "Hello, I am Claude opus 4.8"
-SPEAKER = "Ryan"        # built-in English male voice
+SPEAKER = "Ryan"
 LANGUAGE = "English"
+
+# The listener should hear "Hello, I am Claude Opus 4.8". Spelling the number
+# out reads more reliably than the digits "4.8" for TTS.
+CANDIDATE_TEXTS = [
+    "Hello, I am Claude Opus four point eight.",
+    "Hello, I am Claude Opus four point eight.",
+    "Hello, I am Claude Opus 4.8.",
+]
+
+
+def trim_silence(w, sr, thr=0.02, pad=0.15):
+    win = max(1, int(0.05 * sr))
+    env = np.array([np.sqrt(np.mean(w[i:i + win] ** 2))
+                    for i in range(0, max(1, len(w) - win), win)])
+    active = np.where(env > thr)[0]
+    if len(active) == 0:
+        return w, 0.0
+    start = max(0, int(active[0] * win - pad * sr))
+    end = min(len(w), int((active[-1] + 1) * win + pad * sr))
+    return w[start:end], (end - start) / sr
 
 
 def main():
@@ -36,24 +59,40 @@ def main():
     )
     print(f"Model loaded in {time.time() - t0:.1f}s")
 
-    spk = tts.get_supported_speakers()
-    langs = tts.get_supported_languages()
-    print(f"Supported speakers: {spk}")
-    print(f"Supported languages: {langs}")
+    best = None  # (trimmed_dur, wav, sr, text, seed)
+    for i, text in enumerate(CANDIDATE_TEXTS):
+        torch.manual_seed(1234 + i)
+        t0 = time.time()
+        wavs, sr = tts.generate_custom_voice(
+            text=text,
+            language=LANGUAGE,
+            speaker=SPEAKER,
+            max_new_tokens=256,
+        )
+        raw = np.asarray(wavs[0], dtype=np.float32)
+        trimmed, dur = trim_silence(raw, sr)
+        print(f"[cand {i}] text={text!r} raw={len(raw)/sr:.2f}s "
+              f"trimmed={dur:.2f}s gen={time.time()-t0:.1f}s")
+        # Prefer a compact take (roughly 1.5-5s of speech). Score by closeness
+        # to that band, then by shortness.
+        if 1.2 <= dur <= 6.0:
+            score = dur
+            if best is None or score < best[0]:
+                best = (score, trimmed, sr, text, 1234 + i)
 
-    print(f"Generating: {TEXT!r} (speaker={SPEAKER})...")
-    t0 = time.time()
-    wavs, sr = tts.generate_custom_voice(
-        text=TEXT,
-        language=LANGUAGE,
-        speaker=SPEAKER,
-        max_new_tokens=512,
-    )
-    print(f"Generated in {time.time() - t0:.1f}s, sr={sr}, n={len(wavs)}")
+    if best is None:
+        # Fall back to first candidate raw if nothing landed in the band.
+        torch.manual_seed(1234)
+        wavs, sr = tts.generate_custom_voice(
+            text=CANDIDATE_TEXTS[0], language=LANGUAGE, speaker=SPEAKER,
+            max_new_tokens=256)
+        trimmed, dur = trim_silence(np.asarray(wavs[0], dtype=np.float32), sr)
+        best = (dur, trimmed, sr, CANDIDATE_TEXTS[0], 1234)
 
-    sf.write(OUT_PATH, wavs[0], sr)
-    dur = len(wavs[0]) / sr
-    print(f"Saved {OUT_PATH} ({dur:.2f}s of audio)")
+    _, wav, sr, text, seed = best
+    sf.write(OUT_PATH, wav, sr)
+    print(f"\nSelected take: text={text!r} seed={seed} "
+          f"dur={len(wav)/sr:.2f}s -> saved {OUT_PATH}")
 
 
 if __name__ == "__main__":
