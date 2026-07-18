@@ -33,5 +33,6 @@ british_respell.log
 british_search.log
 kokoro_launder.log
 decouple.log
+age_axis.log
 *.npy
 *.wav
