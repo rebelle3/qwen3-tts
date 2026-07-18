@@ -34,5 +34,6 @@ british_search.log
 kokoro_launder.log
 decouple.log
 age_axis.log
+palette.log
 *.npy
 *.wav
