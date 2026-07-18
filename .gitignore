@@ -35,5 +35,6 @@ kokoro_launder.log
 decouple.log
 age_axis.log
 palette.log
+aging_model.log
 *.npy
 *.wav
