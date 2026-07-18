@@ -37,5 +37,6 @@ age_axis.log
 palette.log
 aging_model.log
 voicedesign_age.log
+voicedesign_age2.log
 *.npy
 *.wav
