@@ -32,5 +32,6 @@ latent_explore.log
 british_respell.log
 british_search.log
 kokoro_launder.log
+decouple.log
 *.npy
 *.wav
